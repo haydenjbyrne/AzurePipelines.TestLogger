@@ -18,5 +18,7 @@ namespace AzurePipelines.TestLogger
         IList<TestResultMessage> Messages { get; }
         string ComputerName { get; }
         Collection<AttachmentSet> Attachments { get; }
+        DateTimeOffset StartTime { get; }
+        DateTimeOffset EndTime { get; }
     }
 }

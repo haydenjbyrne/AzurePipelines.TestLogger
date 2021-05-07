@@ -120,14 +120,20 @@ namespace AzurePipelines.TestLogger
             })) + " ]";
 
             string responseString = await SendAsync(HttpMethod.Post, $"/{testRunId}/results", requestBody, cancellationToken).ConfigureAwait(false);
+            int[] testCaseIds = GetIdsFromResponse(responseString);
+            if (testCaseIds.Length != testCaseNames.Length)
+            {
+                throw new Exception("Unexpected number of test cases added");
+            }
+            return testCaseIds;
+        }
+
+        private static int[] GetIdsFromResponse(string responseString)
+        {
             using (StringReader reader = new StringReader(responseString))
             {
                 JsonObject response = JsonDeserializer.Deserialize(reader) as JsonObject;
                 JsonArray testCases = (JsonArray)response.Value("value");
-                if (testCases.Length != testCaseNames.Length)
-                {
-                    throw new Exception("Unexpected number of test cases added");
-                }
 
                 List<int> testCaseIds = new List<int>();
                 for (int c = 0; c < testCases.Length; c++)
@@ -137,6 +143,42 @@ namespace AzurePipelines.TestLogger
                 }
 
                 return testCaseIds.ToArray();
+            }
+        }
+
+        public async Task AddTestResults(int testRunId, ITestResult[] testResults, CancellationToken cancellationToken)
+        {
+            string requestBody = "[ " + string.Join(", ", testResults.Select(x =>
+            {
+                Dictionary<string, object> properties = new Dictionary<string, object>
+                {
+                    { "testCaseTitle", x.FullyQualifiedName },
+                    { "automatedTestName", x.FullyQualifiedName },
+                    { "state", "Completed" },
+                    { "startedDate", x.StartTime },
+                    { "completedDate", x.EndTime },
+                    { "automatedTestType", "UnitTest" },
+                    { "automatedTestTypeId", "13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" }, // This is used in the sample response and also appears in web searches
+                    { "automatedTestStorage", x.Source },
+                };
+                PopulateTestResultProperties(x, properties);
+                return properties.ToJson();
+            })) + " ]";
+
+            string responseString = await SendAsync(HttpMethod.Post, $"/{testRunId}/results", requestBody, cancellationToken).ConfigureAwait(false);
+            int[] testCaseIds = GetIdsFromResponse(responseString);
+            if (testCaseIds.Length != testResults.Length)
+            {
+                throw new Exception("Unexpected number of tests added");
+            }
+
+            for (int index = 0; index < testResults.Length; index++)
+            {
+                ITestResult testResult = testResults[index];
+                int testId = testCaseIds[index];
+
+                await UploadConsoleOutputsAndErrors(testRunId, testResult, testId, cancellationToken);
+                await UploadTestResultFiles(testRunId, testId, testResult, cancellationToken);
             }
         }
 
@@ -154,12 +196,16 @@ namespace AzurePipelines.TestLogger
 
         protected Dictionary<string, object> GetTestResultProperties(ITestResult testResult)
         {
-            Dictionary<string, object> properties = new Dictionary<string, object>
-            {
-                { "outcome", testResult.Outcome.ToString() },
-                { "computerName", testResult.ComputerName },
-                { "runBy", new Dictionary<string, object> { { "displayName", BuildRequestedFor } } }
-            };
+            Dictionary<string, object> properties = new Dictionary<string, object>();
+            PopulateTestResultProperties(testResult, properties);
+            return properties;
+        }
+
+        private void PopulateTestResultProperties(ITestResult testResult, Dictionary<string, object> properties)
+        {
+            properties["outcome"] = GetTestOutcome(testResult);
+            properties["computerName"] = testResult.ComputerName;
+            properties["runBy"] = new Dictionary<string, object> { ["displayName"] = BuildRequestedFor };
 
             AddAdditionalTestResultProperties(testResult, properties);
 
@@ -185,8 +231,23 @@ namespace AzurePipelines.TestLogger
             {
                 // Handle output type skip, NotFound and None
             }
+        }
 
-            return properties;
+        private static string GetTestOutcome(ITestResult testResult)
+        {
+            switch (testResult.Outcome)
+            {
+                case TestOutcome.None:
+                case TestOutcome.Passed:
+                case TestOutcome.Failed:
+                    return testResult.Outcome.ToString();
+                case TestOutcome.Skipped:
+                    return "NotExecuted";
+                case TestOutcome.NotFound:
+                    return "None";
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
         }
 
         internal abstract string GetTestCasesAsCompleted(IEnumerable<TestResultParent> testCases, DateTime completedDate);
@@ -235,7 +296,7 @@ namespace AzurePipelines.TestLogger
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error from AzurePipelines logger while sending {method} to {requestUri}\nBody:\n{body}\nException:\n{ex}");
+                Console.WriteLine($"Error from AzurePipelines logger while sending {method} to {requestUri}\nBody:\n{body}\nResponse:\n{response.StatusCode}\n{responseBody}\nException:\n{ex}");
                 throw;
             }
 
@@ -250,30 +311,35 @@ namespace AzurePipelines.TestLogger
 
                 foreach (ITestResult testResult in testResultByParent.Select(x => x))
                 {
-                    StringBuilder stdErr = new StringBuilder();
-                    StringBuilder stdOut = new StringBuilder();
-                    foreach (TestResultMessage m in testResult.Messages)
-                    {
-                        if (TestResultMessage.StandardOutCategory.Equals(m.Category, StringComparison.OrdinalIgnoreCase))
-                        {
-                            stdOut.AppendLine(m.Text);
-                        }
-                        else if (TestResultMessage.StandardErrorCategory.Equals(m.Category, StringComparison.OrdinalIgnoreCase))
-                        {
-                            stdErr.AppendLine(m.Text);
-                        }
-                    }
-
-                    if (stdOut.Length > 0)
-                    {
-                        await AttachTextAsFile(testRunId, parent.Id, stdOut.ToString(), "console output.txt", null, cancellationToken);
-                    }
-
-                    if (stdErr.Length > 0)
-                    {
-                        await AttachTextAsFile(testRunId, parent.Id, stdErr.ToString(), "console error.txt", null, cancellationToken);
-                    }
+                    await UploadConsoleOutputsAndErrors(testRunId, testResult, parent.Id, cancellationToken);
                 }
+            }
+        }
+
+        private async Task UploadConsoleOutputsAndErrors(int testRunId, ITestResult testResult, int testId, CancellationToken cancellationToken)
+        {
+            StringBuilder stdErr = new StringBuilder();
+            StringBuilder stdOut = new StringBuilder();
+            foreach (TestResultMessage m in testResult.Messages)
+            {
+                if (TestResultMessage.StandardOutCategory.Equals(m.Category, StringComparison.OrdinalIgnoreCase))
+                {
+                    stdOut.AppendLine(m.Text);
+                }
+                else if (TestResultMessage.StandardErrorCategory.Equals(m.Category, StringComparison.OrdinalIgnoreCase))
+                {
+                    stdErr.AppendLine(m.Text);
+                }
+            }
+
+            if (stdOut.Length > 0)
+            {
+                await AttachTextAsFile(testRunId, testId, stdOut.ToString(), "console output.txt", null, cancellationToken);
+            }
+
+            if (stdErr.Length > 0)
+            {
+                await AttachTextAsFile(testRunId, testId, stdErr.ToString(), "console error.txt", null, cancellationToken);
             }
         }
 
@@ -285,25 +351,30 @@ namespace AzurePipelines.TestLogger
 
                 foreach (ITestResult testResult in testResultByParent.Select(x => x))
                 {
-                    if (testResult.Attachments.Count > 0)
-                    {
-                        Console.WriteLine($"Attaching files to test run {testRunId} and test result {parent.Id}...");
-                    }
+                    await UploadTestResultFiles(testRunId, parent.Id, testResult, cancellationToken);
+                }
+            }
+        }
 
-                    foreach (AttachmentSet attachmentSet in testResult.Attachments)
-                    {
-                        if (attachmentSet.Attachments.Count > 0)
-                        {
-                            Console.WriteLine($"Attaching files in set {attachmentSet.DisplayName} {attachmentSet.Uri}...");
-                        }
+        private async Task UploadTestResultFiles(int testRunId, int testResultId, ITestResult testResult, CancellationToken cancellationToken)
+        {
+            if (testResult.Attachments.Count > 0)
+            {
+                Console.WriteLine($"Attaching files to test run {testRunId} and test result {testResultId}...");
+            }
 
-                        foreach (UriDataAttachment attachment in attachmentSet.Attachments)
-                        {
-                            Console.WriteLine($"Attaching file {attachment.Description} {attachment.Uri.LocalPath}...");
+            foreach (AttachmentSet attachmentSet in testResult.Attachments)
+            {
+                if (attachmentSet.Attachments.Count > 0)
+                {
+                    Console.WriteLine($"Attaching files in set {attachmentSet.DisplayName} {attachmentSet.Uri}...");
+                }
 
-                            await AttachFile(testRunId, parent.Id, attachment.Uri.LocalPath, attachment.Description, cancellationToken);
-                        }
-                    }
+                foreach (UriDataAttachment attachment in attachmentSet.Attachments)
+                {
+                    Console.WriteLine($"Attaching file {attachment.Description} {attachment.Uri.LocalPath}...");
+
+                    await AttachFile(testRunId, testResultId, attachment.Uri.LocalPath, attachment.Description, cancellationToken);
                 }
             }
         }

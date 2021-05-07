@@ -24,6 +24,8 @@ namespace AzurePipelines.TestLogger
 
         Task<int[]> AddTestCases(int testRunId, string[] testCaseNames, DateTime startedDate, string source, CancellationToken cancellationToken);
 
+        Task AddTestResults(int testRunId, ITestResult[] testResults, CancellationToken cancellationToken);
+
         Task MarkTestRunCompleted(int testRunId, DateTime startedDate, DateTime completedDate, CancellationToken cancellationToken);
     }
 }

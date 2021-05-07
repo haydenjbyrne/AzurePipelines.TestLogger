@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.VisualStudio.TestPlatform.ObjectModel;
 using Microsoft.VisualStudio.TestPlatform.ObjectModel.Client;
 using Microsoft.VisualStudio.TestPlatform.ObjectModel.Logging;
@@ -23,7 +24,7 @@ namespace AzurePipelines.TestLogger
         private readonly IEnvironmentVariableProvider _environmentVariableProvider;
         private readonly IApiClientFactory _apiClientFactory;
         private IApiClient _apiClient;
-        private LoggerQueue _queue;
+        private ILoggerQueue _queue;
         private bool _groupTestResultsByClassName = true;
 
         public AzurePipelinesTestLogger()
@@ -109,12 +110,21 @@ namespace AzurePipelines.TestLogger
                 _groupTestResultsByClassName = groupTestResultsByClassName;
             }
 
-            _queue = new LoggerQueue(_apiClient, buildId, agentName, jobName, _groupTestResultsByClassName);
+            if (parameters.TryGetValue(TestLoggerParameters.UseAlternateLogger, out string useAlternateLoggerString)
+                && bool.TryParse(useAlternateLoggerString, out bool useAlternateLogger) && useAlternateLogger)
+            {
+                _queue = new AlternateLoggerQueue(_apiClient, buildId, agentName, jobName);
+            }
+            else
+            {
+                _queue = new LoggerQueue(_apiClient, buildId, agentName, jobName, _groupTestResultsByClassName);
+            }
 
             // Register for the events
             events.TestRunMessage += TestMessageHandler;
             events.TestResult += TestResultHandler;
             events.TestRunComplete += TestRunCompleteHandler;
+            events.DiscoveredTests += DiscoveredTestsHandler;
         }
 
         private bool GetRequiredVariable(string name, out string value)
@@ -135,6 +145,11 @@ namespace AzurePipelines.TestLogger
 
         private void TestResultHandler(object sender, TestResultEventArgs e) =>
             _queue.Enqueue(new VstpTestResult(e.Result));
+
+        private void DiscoveredTestsHandler(object sender, DiscoveredTestsEventArgs e)
+        {
+            // Add code to handle discovered tests
+        }
 
         private void TestRunCompleteHandler(object sender, TestRunCompleteEventArgs e) => _queue.Flush();
     }

@@ -9,5 +9,7 @@
         internal const string ApiVersion = "ApiVersion";
 
         internal const string GroupTestResultsByClassName = "GroupTestResultsByClassName";
+
+        internal const string UseAlternateLogger = "UseAlternateLogger";
     }
 }

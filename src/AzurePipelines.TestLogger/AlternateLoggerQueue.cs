@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace AzurePipelines.TestLogger
 {
-    internal class LoggerQueue : ILoggerQueue
+    internal class AlternateLoggerQueue : ILoggerQueue
     {
         private readonly AsyncProducerConsumerCollection<ITestResult> _queue = new AsyncProducerConsumerCollection<ITestResult>();
         private readonly Task _consumeTask;
@@ -17,21 +17,17 @@ namespace AzurePipelines.TestLogger
         private readonly string _buildId;
         private readonly string _agentName;
         private readonly string _jobName;
-        private readonly bool _groupTestResultsByClassName;
 
         // Internal for testing
-        internal Dictionary<string, TestResultParent> Parents { get; } = new Dictionary<string, TestResultParent>();
         internal DateTime StartedDate { get; } = DateTime.UtcNow;
         internal int RunId { get; set; }
-        internal string Source { get; set; }
 
-        public LoggerQueue(IApiClient apiClient, string buildId, string agentName, string jobName, bool groupTestResultsByClassName = true)
+        public AlternateLoggerQueue(IApiClient apiClient, string buildId, string agentName, string jobName)
         {
             _apiClient = apiClient;
             _buildId = buildId;
             _agentName = agentName;
             _jobName = jobName;
-            _groupTestResultsByClassName = groupTestResultsByClassName;
 
             _consumeTask = ConsumeItemsAsync(_consumeTaskCancellationSource.Token);
         }
@@ -92,18 +88,10 @@ namespace AzurePipelines.TestLogger
                 // Create a test run if we need it
                 if (RunId == 0)
                 {
-                    Source = GetSource(testResults);
                     RunId = await CreateTestRun(cancellationToken).ConfigureAwait(false);
                 }
 
-                // Group results by their parent
-                IEnumerable<IGrouping<string, ITestResult>> testResultsByParent = GroupTestResultsByParent(testResults);
-
-                // Create any required parent nodes
-                await CreateParents(testResultsByParent, cancellationToken).ConfigureAwait(false);
-
-                // Update parents with the test results
-                await SendTestResults(testResultsByParent, cancellationToken).ConfigureAwait(false);
+                await CreateTests(testResults, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -127,9 +115,24 @@ namespace AzurePipelines.TestLogger
         }
 
         // Internal for testing
+        internal static string GetSource(ITestResult testResult)
+        {
+            string source = testResult.Source;
+            if (source != null)
+            {
+                source = Path.GetFileName(source);
+                if (source.EndsWith(".dll"))
+                {
+                    return source.Substring(0, source.Length - 4);
+                }
+            }
+            return source;
+        }
+
+        // Internal for testing
         internal async Task<int> CreateTestRun(CancellationToken cancellationToken)
         {
-            string runName = $"{(string.IsNullOrEmpty(Source) ? "Unknown Test Source" : Source)} (OS: {System.Runtime.InteropServices.RuntimeInformation.OSDescription}, Job: {_jobName}, Agent: {_agentName})";
+            string runName = $"VSTest Test Run (Job: {_jobName}, Agent: {_agentName})";
 
             TestRun testRun = new TestRun
             {
@@ -143,62 +146,12 @@ namespace AzurePipelines.TestLogger
         }
 
         // Internal for testing
-        internal IEnumerable<IGrouping<string, ITestResult>> GroupTestResultsByParent(ITestResult[] testResults) =>
-            testResults.GroupBy(x =>
-            {
-                // Namespace.ClassName.MethodName
-                string name = x.FullyQualifiedName;
-
-                if (Source != null && name.StartsWith(Source + "."))
-                {
-                    // remove the namespace
-                    name = name.Substring(Source.Length + 1);
-                }
-
-                // At this point, name should always have at least one '.' to represent the Class.Method
-                if (_groupTestResultsByClassName)
-                {
-                    // We need to start at the opening method if there is one
-                    int startIndex = name.IndexOf('(');
-                    if (startIndex < 0)
-                    {
-                        startIndex = name.Length - 1;
-                    }
-
-                    // remove the method name to get just the class name
-                    return name.Substring(0, name.LastIndexOf('.', startIndex));
-                }
-                else
-                {
-                    // remove the class name to get just the method name
-                    return name.Substring(name.IndexOf('.') + 1);
-                }
-            });
-
-        // Internal for testing
-        internal async Task CreateParents(IEnumerable<IGrouping<string, ITestResult>> testResultsByParent, CancellationToken cancellationToken)
+        internal async Task CreateTests(ITestResult[] testResults, CancellationToken cancellationToken)
         {
-            // Find the parents that don't exist
-            string[] parentsToAdd = testResultsByParent
-                .Select(x => x.Key)
-                .Where(x => !Parents.ContainsKey(x))
-                .ToArray();
-
-            // Batch an add operation and record the new parent IDs
-            DateTime startedDate = DateTime.UtcNow;
-            if (parentsToAdd.Length > 0)
+            if (testResults.Length > 0)
             {
-                int[] parents = await _apiClient.AddTestCases(RunId, parentsToAdd, startedDate, Source, cancellationToken).ConfigureAwait(false);
-                for (int i = 0; i < parents.Length; i++)
-                {
-                    Parents.Add(parentsToAdd[i], new TestResultParent(parents[i], startedDate));
-                }
+                await _apiClient.AddTestResults(RunId, testResults, cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        private Task SendTestResults(IEnumerable<IGrouping<string, ITestResult>> testResultsByParent, CancellationToken cancellationToken)
-        {
-            return _apiClient.UpdateTestResults(RunId, Parents, testResultsByParent, cancellationToken);
         }
 
         private async Task SendTestsCompleted(CancellationToken cancellationToken)
@@ -208,11 +161,6 @@ namespace AzurePipelines.TestLogger
             // Mark all parents as completed (but only if we actually created a parent)
             if (RunId != 0)
             {
-                if (Parents.Values.Count > 0)
-                {
-                    await _apiClient.MarkTestCasesCompleted(RunId, Parents.Values, completedDate, cancellationToken).ConfigureAwait(false);
-                }
-
                 await _apiClient.MarkTestRunCompleted(RunId, StartedDate, completedDate, cancellationToken).ConfigureAwait(false);
             }
         }
