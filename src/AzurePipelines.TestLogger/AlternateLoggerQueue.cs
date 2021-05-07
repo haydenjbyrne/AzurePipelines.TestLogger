@@ -100,36 +100,6 @@ namespace AzurePipelines.TestLogger
         }
 
         // Internal for testing
-        internal static string GetSource(ITestResult[] testResults)
-        {
-            string source = Array.Find(testResults, x => !string.IsNullOrEmpty(x.Source))?.Source;
-            if (source != null)
-            {
-                source = Path.GetFileName(source);
-                if (source.EndsWith(".dll"))
-                {
-                    return source.Substring(0, source.Length - 4);
-                }
-            }
-            return source;
-        }
-
-        // Internal for testing
-        internal static string GetSource(ITestResult testResult)
-        {
-            string source = testResult.Source;
-            if (source != null)
-            {
-                source = Path.GetFileName(source);
-                if (source.EndsWith(".dll"))
-                {
-                    return source.Substring(0, source.Length - 4);
-                }
-            }
-            return source;
-        }
-
-        // Internal for testing
         internal async Task<int> CreateTestRun(CancellationToken cancellationToken)
         {
             string runName = $"VSTest Test Run (Job: {_jobName}, Agent: {_agentName})";

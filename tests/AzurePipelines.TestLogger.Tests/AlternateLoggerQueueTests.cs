@@ -38,50 +38,5 @@ namespace AzurePipelines.TestLogger.Tests
                     }}")
             });
         }
-
-        [Test]
-        public void GetSourceWithoutExtension()
-        {
-            // Given
-            TestTestResult testResult = new TestTestResult
-            {
-                Source = "/a/b/Foo.Bar"
-            };
-
-            // When
-            string source = AlternateLoggerQueue.GetSource(new[] { testResult });
-
-            // Then
-            source.ShouldBe("Foo.Bar");
-        }
-
-        [Test]
-        public void GetSourceWithExtension()
-        {
-            // Given
-            TestTestResult testResult = new TestTestResult
-            {
-                Source = "/a/b/Foo.Bar.dll"
-            };
-
-            // When
-            string source = AlternateLoggerQueue.GetSource(new[] { testResult });
-
-            // Then
-            source.ShouldBe("Foo.Bar");
-        }
-
-        [Test]
-        public void GetMissingSource()
-        {
-            // Given
-            TestTestResult testResult = new TestTestResult();
-
-            // When
-            string source = AlternateLoggerQueue.GetSource(new[] { testResult });
-
-            // Then
-            source.ShouldBeNull();
-        }
     }
 }

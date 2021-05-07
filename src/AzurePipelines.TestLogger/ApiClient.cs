@@ -159,7 +159,7 @@ namespace AzurePipelines.TestLogger
                     { "completedDate", x.EndTime },
                     { "automatedTestType", "UnitTest" },
                     { "automatedTestTypeId", "13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" }, // This is used in the sample response and also appears in web searches
-                    { "automatedTestStorage", x.Source },
+                    { "automatedTestStorage", GetSource(x) },
                 };
                 PopulateTestResultProperties(x, properties);
                 return properties.ToJson();
@@ -180,6 +180,21 @@ namespace AzurePipelines.TestLogger
                 await UploadConsoleOutputsAndErrors(testRunId, testResult, testId, cancellationToken);
                 await UploadTestResultFiles(testRunId, testId, testResult, cancellationToken);
             }
+        }
+
+        // Internal for testing
+        internal static string GetSource(ITestResult testResult)
+        {
+            string source = testResult.Source;
+            if (source != null)
+            {
+                source = Path.GetFileName(source);
+                if (source.EndsWith(".dll"))
+                {
+                    return source.Substring(0, source.Length - 4);
+                }
+            }
+            return source;
         }
 
         public async Task MarkTestRunCompleted(int testRunId, DateTime startedDate, DateTime completedDate, CancellationToken cancellationToken)
