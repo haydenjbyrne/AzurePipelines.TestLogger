@@ -155,8 +155,8 @@ namespace AzurePipelines.TestLogger
                     { "testCaseTitle", x.FullyQualifiedName },
                     { "automatedTestName", x.FullyQualifiedName },
                     { "state", "Completed" },
-                    { "startedDate", x.StartTime },
-                    { "completedDate", x.EndTime },
+                    { "startedDate", x.StartTime.ToString("O") },
+                    { "completedDate", x.EndTime.ToString("O") },
                     { "automatedTestType", "UnitTest" },
                     { "automatedTestTypeId", "13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" }, // This is used in the sample response and also appears in web searches
                     { "automatedTestStorage", GetSource(x) },
